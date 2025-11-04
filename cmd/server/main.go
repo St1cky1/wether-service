@@ -18,7 +18,11 @@ func main() {
 
 	r := chi.NewRouter()     //  создакм новый роутер, через него поднимаем сервер
 	r.Use(middleware.Logger) // логируем запросы
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/{city}", func(w http.ResponseWriter, r *http.Request) {
+
+		city := chi.URLParam(r, "city")          // получаем параметр из урла
+		fmt.Printf("Requested city: %s\n", city) // лонируем запрос
+
 		_, err := w.Write([]byte("welcome"))
 		if err != nil {
 			log.Println(err)
