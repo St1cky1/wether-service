@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/St1cky1/wether-service/internal/client/http/geocoding"
+	openmeteo "github.com/St1cky1/wether-service/internal/client/http/open_meteo"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-co-op/gocron/v2"
@@ -18,12 +21,38 @@ func main() {
 
 	r := chi.NewRouter()     //  создакм новый роутер, через него поднимаем сервер
 	r.Use(middleware.Logger) // логируем запросы
+
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	geocodingClient := geocoding.NewClient(httpClient) // создаем клиента для получекния коорлинат
+	openmeteoClient := openmeteo.NewClient(httpClient) // создаем клиента для получения температуры
+
 	r.Get("/{city}", func(w http.ResponseWriter, r *http.Request) {
 
 		city := chi.URLParam(r, "city")          // получаем параметр из урла
 		fmt.Printf("Requested city: %s\n", city) // лонируем запрос
 
-		_, err := w.Write([]byte("welcome"))
+		geoResp, err := geocodingClient.GetCoords(city) // эндпоинт для получения координат
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		openMeteoResp, err := openmeteoClient.GetTemperature(geoResp.Latitude, geoResp.Longitude)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		raw, err := json.Marshal(openMeteoResp)
+		if err != nil {
+			log.Println(err)
+		}
+
+		w.Header().Set("Content-Type", "application/json") // укзываем, что данные вернем в формате json
+		_, err = w.Write(raw)
 		if err != nil {
 			log.Println(err)
 		}
