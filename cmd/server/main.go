@@ -13,40 +13,49 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-co-op/gocron/v2"
+	// "github.com/golang/protobuf/ptypes/timestamp"
 )
 
-const portHTTP = ":3000"
+const (
+	portHTTP = ":3000"
+	city     = "Moscow"
+)
+
+type Reading struct { // показания погоды
+	Timestamp   time.Time
+	Temperature float64
+}
+
+type Storage struct { // временное хранилище показаний
+	data map[string][]Reading
+	mu   sync.RWMutex
+}
 
 func main() {
 
 	r := chi.NewRouter()     //  создакм новый роутер, через него поднимаем сервер
 	r.Use(middleware.Logger) // логируем запросы
 
-	httpClient := &http.Client{
-		Timeout: 10 * time.Second,
+	storage := &Storage{
+		data: make(map[string][]Reading),
 	}
-
-	geocodingClient := geocoding.NewClient(httpClient) // создаем клиента для получекния коорлинат
-	openmeteoClient := openmeteo.NewClient(httpClient) // создаем клиента для получения температуры
 
 	r.Get("/{city}", func(w http.ResponseWriter, r *http.Request) {
 
-		city := chi.URLParam(r, "city")          // получаем параметр из урла
-		fmt.Printf("Requested city: %s\n", city) // лонируем запрос
+		cityName := chi.URLParam(r, "city")          // получаем параметр из урла
+		fmt.Printf("Requested city: %s\n", cityName) // лонируем запрос
 
-		geoResp, err := geocodingClient.GetCoords(city) // эндпоинт для получения координат
-		if err != nil {
-			log.Println(err)
+		storage.mu.RLock()
+		defer storage.mu.RUnlock()
+
+		reading, ok := storage.data[cityName] // получаем показания из хранилища
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte("not found"))
 			return
 		}
 
-		openMeteoResp, err := openmeteoClient.GetTemperature(geoResp.Latitude, geoResp.Longitude)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-
-		raw, err := json.Marshal(openMeteoResp)
+		raw, err := json.Marshal(reading)
 		if err != nil {
 			log.Println(err)
 		}
@@ -63,7 +72,7 @@ func main() {
 		panic(err)
 	}
 
-	jobs, err := initJobs(s) // вызываем "cron"
+	jobs, err := initJobs(s, storage) // вызываем "cron"
 	if err != nil {
 		panic(err)
 	}
@@ -92,7 +101,14 @@ func main() {
 	wg.Wait()
 }
 
-func initJobs(sheduler gocron.Scheduler) ([]gocron.Job, error) { // принемаем сам планировщик, возвращаем слайс job и ошибку
+func initJobs(sheduler gocron.Scheduler, storage *Storage) ([]gocron.Job, error) { // принемаем сам планировщик, возвращаем слайс job и ошибку
+
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	geocodingClient := geocoding.NewClient(httpClient) // создаем клиента для получекния коорлинат
+	openmeteoClient := openmeteo.NewClient(httpClient) // создаем клиента для получения температуры
 
 	j, err := sheduler.NewJob( // j содержит job`у (новое задание в планировщике)
 		gocron.DurationJob(
@@ -100,7 +116,32 @@ func initJobs(sheduler gocron.Scheduler) ([]gocron.Job, error) { // принем
 		),
 		gocron.NewTask(
 			func() {
-				fmt.Println("Hello from cron!") // предоставляет функцию задачи и параметры задания
+				geoResp, err := geocodingClient.GetCoords(city) // эндпоинт для получения координат
+				if err != nil {
+					log.Println(err)
+					return
+				}
+
+				openMeteoResp, err := openmeteoClient.GetTemperature(geoResp.Latitude, geoResp.Longitude)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+
+				storage.mu.Lock()
+				defer storage.mu.Unlock()
+
+				timestamp, err := time.Parse("2006-01-02T15:04", openMeteoResp.Current.Time)
+				if err != nil {
+					log.Println(err)
+				}
+
+				storage.data[city] = append(storage.data[city], Reading{
+					Timestamp:   timestamp,
+					Temperature: openMeteoResp.Current.Temperature2m,
+				})
+
+				fmt.Printf("%v Update data for city: %s\n", time.Now(), city)
 			},
 		),
 	)
